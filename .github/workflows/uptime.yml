@@ -1,0 +1,42 @@
+# External uptime check for https://wanderwort.net. A failed run is the alert: GitHub
+# emails the repo owner about failed scheduled workflows (Settings → Notifications →
+# Actions). Public repo on purpose: Actions minutes are free here, not in a private one.
+name: uptime
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # the check (GitHub may start it a few minutes late)
+    - cron: '17 5 1 * *'     # keepalive, see below
+  workflow_dispatch:
+
+jobs:
+  check:
+    if: github.event.schedule != '17 5 1 * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: wanderwort.net answers
+        run: |
+          # Three tries 30 s apart, so one dropped packet is not a page.
+          check() {
+            # /health: 200 only when the mounted dataset is complete (see web/nginx.conf).
+            curl -fsS -m 20 https://wanderwort.net/health | grep -q '"dataset_version"' || { echo "::warning::/health failed"; return 1; }
+            # A word page: the SSI head and body fragments made it into the HTML.
+            curl -fsS -m 20 https://wanderwort.net/en/coffee | grep -q '<title>coffee' || { echo "::warning::/en/coffee failed"; return 1; }
+            # www lands on the apex.
+            [ "$(curl -sS -m 20 -o /dev/null -L -w '%{http_code} %{url_effective}' http://www.wanderwort.net/)" = "200 https://wanderwort.net/" ] || { echo "::warning::www redirect failed"; return 1; }
+          }
+          for i in 1 2 3; do check && { echo ok; exit 0; }; sleep 30; done
+          echo "::error::wanderwort.net is down or broken"; exit 1
+
+  # GitHub turns off scheduled workflows in a repo with no activity for 60 days.
+  # Re-enabling the workflow through the API once a month counts as activity.
+  keepalive:
+    if: github.event.schedule == '17 5 1 * *'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/uptime.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}
